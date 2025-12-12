@@ -32,6 +32,7 @@ struct VoxelData
     float humidity;
     int surfaceLevel;
     float waterAmount;
+    float mycelium;
 };
 
 VoxelData worldData[GRID_SIZE][GRID_HEIGHT][GRID_SIZE];
@@ -205,7 +206,7 @@ void runWaterSimulation()
         }
     }
 
-    // 3. Phase de capillarité
+    // 3. Phase de "capillarité"
     // On calcule l'humidité de surface en fonction de la distance à l'eau accumulée
     for (int x = 0; x < GRID_SIZE; x++)
     {
@@ -235,6 +236,78 @@ void runWaterSimulation()
             {
                 worldData[x][surfaceY][z].humidity = 0.0f;
             }
+        }
+    }
+}
+
+struct Agent
+{
+    float x, y, z;
+};
+
+void runMyceliumSimulation()
+{
+    std::cout << "Passe 2.5 : Simulation Mycelium..." << std::endl;
+
+    std::vector<Agent> agents;
+    // 1. Initialisation : On lance des spores dans le sous-sol
+    for (int i = 0; i < 20; i++) // 20 semble orrect pour 64x64
+    {
+        agents.push_back({(float)(rand() % GRID_SIZE),
+                          (float)(rand() % (GRID_HEIGHT / 3)),
+                          (float)(rand() % GRID_SIZE)});
+    }
+
+    // 2. Simulation
+    for (int iter = 0; iter < 1000; iter++)
+    { // 1000 pas de temps (à tester pour pê diminuer)
+        for (auto &agent : agents)
+        {
+            // Position entière actuelle
+            int ix = (int)agent.x;
+            int iy = (int)agent.y;
+            int iz = (int)agent.z;
+
+            // Marquage du chemin (phéromone)
+            if (ix >= 0 && ix < GRID_SIZE && iy >= 0 && iy < GRID_HEIGHT && iz >= 0 && iz < GRID_SIZE)
+            {
+                worldData[ix][iy][iz].mycelium += 0.1f; // On laisse une trace
+                if (worldData[ix][iy][iz].mycelium > 1.0f)
+                    worldData[ix][iy][iz].mycelium = 1.0f;
+            }
+
+            // Déplacement (Marche aléatoire biaisée)
+            float dx = (rand() % 3 - 1) * 0.5f; // -0.5, 0, 0.5
+            float dy = (rand() % 3 - 1) * 0.5f;
+            float dz = (rand() % 3 - 1) * 0.5f;
+
+            // Biais : Attiré par l'eau
+            if (ix >= 0 && ix < GRID_SIZE && iy + 1 < GRID_HEIGHT && iz >= 0 && iz < GRID_SIZE)
+            {
+                // Si c'est plus humide en haut, on a envie de monter
+                if (worldData[ix][iy + 1][iz].waterAmount > worldData[ix][iy][iz].waterAmount)
+                {
+                    dy += 0.2f;
+                }
+            }
+
+            agent.x += dx;
+            agent.y += dy;
+            agent.z += dz;
+
+            // Clamp aux limites du monde
+            if (agent.x < 0)
+                agent.x = 0;
+            if (agent.x >= GRID_SIZE)
+                agent.x = GRID_SIZE - 1;
+            if (agent.y < 0)
+                agent.y = 0;
+            if (agent.y >= GRID_HEIGHT)
+                agent.y = GRID_HEIGHT - 1;
+            if (agent.z < 0)
+                agent.z = 0;
+            if (agent.z >= GRID_SIZE)
+                agent.z = GRID_SIZE - 1;
         }
     }
 }
@@ -298,14 +371,19 @@ const char *vertexShaderSource = R"(
 
     out vec4 Color;
     out vec3 Normal;
+    
     uniform mat4 model;
     uniform mat4 view;
     uniform mat4 projection;
+    uniform float uScale;
 
     void main() {
         Color = aColor;
         Normal = aNormal;
-        gl_Position = projection * view * model * vec4(aPos + aOffset, 1.0);
+        
+        vec3 scaledPos = aPos * uScale;
+        
+        gl_Position = projection * view * model * vec4(scaledPos + aOffset, 1.0);
     }
 )";
 
@@ -370,8 +448,19 @@ void generateVegetation(WFCEngine &wfc)
 
             // Règles de distribution des plantes
 
+            float myceliumDensity = worldData[x][surfaceY - 1][z].mycelium;
+
+            if (myceliumDensity > 0.3f && tileId != SURFACE_SABLE && tileId != SURFACE_ROCHE)
+            {
+                // Plus il y a de mycélium, plus il y a de champignons
+                if (r < (myceliumDensity * 0.8f))
+                {
+                    plantToPlace = PLANT_MUSHROOM_RED;
+                }
+            }
+
             // Cas 1 : FORET
-            if (tileId == SURFACE_FORET)
+            else if (tileId == SURFACE_FORET)
             {
                 // Forte densité d'arbres
                 if (r < 0.025f)
@@ -424,7 +513,7 @@ void generateVegetation(WFCEngine &wfc)
             // Cas 4 : ROCHE
             else if (tileId == SURFACE_ROCHE)
             {
-                // Pin alpin accroché à la roche (1% chance)
+                // Pin accroché à la roche (1% chance)
                 if (r < 0.01f)
                 {
                     plantToPlace = TREE_PINE;
@@ -477,6 +566,7 @@ bool showBlockTypes[8] = {true, true, true, true, true, true, true, true}; // Po
 bool showWaterMode = false;                                                // Mode visualisation nappes
 // IDs pour rappel :
 // 0:AIR, 1:FORET, 2:HERBE, 3:SABLE, 4:ROCHE, 5:CALCAIRE, 6:GRANITE, 7:EAU
+bool showMyceliumMode = false;
 
 int main()
 {
@@ -547,6 +637,8 @@ int main()
 
     // Appel hydro
     runWaterSimulation();
+    // Appel mycelium
+    runMyceliumSimulation();
 
     // Passe 3 : WFC
     // On crée les règles manuelles
@@ -576,9 +668,9 @@ int main()
             if (data.waterAmount > 0.8f && tileId == DEEP_EAU) return 20.0f;
             
             if (data.hardness > 0.6f)
-                return (tileId == DEEP_GRANITE) ? 10.0f : EPSILON;
+                return (tileId == DEEP_GRANITE) ? 10.0f : 0.5f;//EPSILON;
             else
-                return (tileId == DEEP_CALCAIRE) ? 10.0f : EPSILON;
+                return (tileId == DEEP_CALCAIRE) ? 10.0f : 0.5f;//EPSILON;
         }
 
         // Surface (dépend de l'humidité calculée par la simulation passe 2)
@@ -662,11 +754,31 @@ int main()
             if (!wPressed)
             {
                 showWaterMode = !showWaterMode;
+
+                if (showWaterMode)
+                    showMyceliumMode = false;
+
                 wPressed = true;
             }
         }
         else
             wPressed = false;
+        //Toggle mode mycélium
+        static bool mPressed = false;
+        if (glfwGetKey(window, GLFW_KEY_M) == GLFW_PRESS)
+        {
+            if (!mPressed)
+            {
+                showMyceliumMode = !showMyceliumMode;
+
+                if (showMyceliumMode)
+                    showWaterMode = false;
+
+                mPressed = true;
+            }
+        }
+        else
+            mPressed = false;
 
         // Toggle Surface (Touche 1) : Active/Désactive les IDs 1, 2, 3, 4
         static bool k1Pressed = false;
@@ -751,12 +863,20 @@ int main()
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, &view[0][0]);
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, &glm::mat4(1.0f)[0][0]);
 
+        int scaleLoc = glGetUniformLocation(shaderProgram, "uScale");
+
         // Construction du buffer d'affichage
         std::vector<float> opaqueData;
+        std::vector<float> largePlantData;
+        std::vector<float> smallPlantData;
         std::vector<float> transparentData;
+
         int opaqueCount = 0;
+        int largePlantCount = 0;
+        int smallPlantCount = 0;
         int transparentCount = 0;
 
+        // Remplissage des vecteurs de données du terrain
         for (int x = 0; x < GRID_SIZE; x++)
         {
             for (int y = 0; y < GRID_HEIGHT; y++)
@@ -784,10 +904,34 @@ int main()
 
                     bool isTransparent = false;
 
-                    // Mode nappes
-                    if (showWaterMode)
+                    const VoxelData &data = worldData[x][y][z];
+
+                    if (showMyceliumMode)
                     {
-                        const VoxelData &data = worldData[x][y][z];
+                        if (data.mycelium > 0.05f)
+                        {
+                            // C'est du mycélium -> Violet
+                            r = 0.6f;
+                            g = 0.0f;
+                            b = 0.8f;
+
+                            // L'opacité dépend de la densité (plus c'est concentré, plus c'est visible)
+                            a = std::min(data.mycelium * 1.5f, 0.9f);
+                            isTransparent = true;
+                        }
+                        else
+                        {
+                            // Pas de mycélium -> Gris transparent
+                            r = 0.2f;
+                            g = 0.2f;
+                            b = 0.2f;
+                            a = 0.03f;
+                            isTransparent = true;
+                        }
+                    }
+                    // Mode nappes
+                    else if (showWaterMode)
+                    {
                         if (tid == DEEP_GRANITE)
                         {
                             // Granite reste opaque
@@ -796,7 +940,7 @@ int main()
                         {
                             if (data.waterAmount > 0.05f)
                             {
-                                // HUMIDE -> Transparence selon le taux
+                                // humide -> Transparence selon le taux
                                 r = 0.0f;
                                 g = 0.5f;
                                 b = 1.0f;
@@ -805,7 +949,7 @@ int main()
                             }
                             else
                             {
-                                // SEC -> Transparent (quasi invisible)
+                                // sec -> Quasi invisible
                                 r = 0.8f;
                                 g = 0.8f;
                                 b = 0.8f;
@@ -816,7 +960,6 @@ int main()
                     }
                     else
                     {
-                        // Mode Normal : l'Eau profonde est transparente (si utilisée)
                         if (tid == DEEP_EAU)
                         {
                             a = 0.6f;
@@ -851,74 +994,119 @@ int main()
             }
         }
 
-            for (const auto &plant : worldPlants)
+        // Remplissage des vecteurs de données des plantes
+        for (const auto &plant : worldPlants)
+        {
+            // Récupérer le modèle
+            if (plantModels.find(plant.type) == plantModels.end())
+                continue;
+            const VoxelModel &model = plantModels[plant.type];
+
+            float plantScale = 1.f;
+            if (plant.type == PLANT_MUSHROOM_RED)
+                plantScale=0.25f;
+
+            float rootX = (float)plant.x;
+            float rootY = (float)plant.y;
+            float rootZ = (float)plant.z;
+
+            std::vector<float> *targetData = nullptr;
+            int *targetCount = nullptr;
+            float baseH;
+
+            // Si c'est un champignon, l'échelle est différente, donc le calcul des coord et le vecteur aussi
+            if (plantScale < 0.5f)
             {
-                // Récupérer le modèle
-                if (plantModels.find(plant.type) == plantModels.end())
-                    continue;
-                const VoxelModel &model = plantModels[plant.type];
-
-                // Pour chaque voxel de l'arbre
-                for (const auto &part : model.parts)
-                {
-                    // Position absolue = Position Plante + Position Relative
-                    float px = (float)(plant.x + part.dx);
-                    float py = (float)(plant.y + part.dy);
-                    float pz = (float)(plant.z + part.dz);
-
-                    // Couleur
-                    float r = part.r;
-                    float g = part.g;
-                    float b = part.b;
-                    float a = 1.0f;
-
-                    // On ajoute au tableau Opaque
-                    opaqueData.push_back(px);
-                    opaqueData.push_back(py);
-                    opaqueData.push_back(pz);
-                    opaqueData.push_back(r);
-                    opaqueData.push_back(g);
-                    opaqueData.push_back(b);
-                    opaqueData.push_back(a);
-                    opaqueCount++;
-                }
+                targetData = &smallPlantData;
+                targetCount = &smallPlantCount;
+                baseH = rootY + 0.5f + (plantScale * 0.5f);
+            }
+            else
+            {
+                targetData = &largePlantData;
+                targetCount = &largePlantCount;
+                baseH = rootY;
             }
 
-            // Dessin des voxels opaques
-            if (opaqueCount > 0)
+            // Pour chaque voxel de l'arbre
+            for (const auto &part : model.parts)
             {
-                glDepthMask(GL_TRUE);
-                glDisable(GL_BLEND);
+                float px = rootX + (part.dx * plantScale);
+                float py = baseH + (part.dy * plantScale);
+                float pz = rootZ + (part.dz * plantScale);
 
-                glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-                glBufferSubData(GL_ARRAY_BUFFER, 0, opaqueData.size() * sizeof(float), opaqueData.data());
+                // Ajout dans le plantData idoine
+                targetData->push_back(px);
+                targetData->push_back(py);
+                targetData->push_back(pz);
+                targetData->push_back(part.r);
+                targetData->push_back(part.g);
+                targetData->push_back(part.b);
+                targetData->push_back(1.0f);
 
-                glBindVertexArray(cubeVAO);
-                glDrawArraysInstanced(GL_TRIANGLES, 0, 36, opaqueCount);
+                (*targetCount)++;
             }
-
-            // Dessin des voxels transparents
-            if (transparentCount > 0)
-            {
-                glDepthMask(GL_FALSE);
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-                glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-                glBufferSubData(GL_ARRAY_BUFFER, 0, transparentData.size() * sizeof(float), transparentData.data());
-
-                glBindVertexArray(cubeVAO);
-                glDrawArraysInstanced(GL_TRIANGLES, 0, 36, transparentCount);
-
-                // Restauration des états par défaut pour la prochaine frame
-                glDepthMask(GL_TRUE);
-                glEnable(GL_CULL_FACE);
-                glDisable(GL_BLEND);
-            }
-
-            glfwSwapBuffers(window);
-            glfwPollEvents();
         }
+
+        // Dessin des voxels opaques
+        if (opaqueCount > 0)
+        {
+            glUniform1f(scaleLoc, 1.f);
+            glDepthMask(GL_TRUE);
+            glDisable(GL_BLEND);
+
+            glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, opaqueData.size() * sizeof(float), opaqueData.data());
+
+            glBindVertexArray(cubeVAO);
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 36, opaqueCount);
+        }
+
+        // Dessin des grandes plantes
+        if (largePlantCount > 0)
+        {
+            glUniform1f(scaleLoc, 1.0f);
+
+            glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, largePlantData.size() * sizeof(float), largePlantData.data());
+            glBindVertexArray(cubeVAO);
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 36, largePlantCount);
+        }
+
+        // Dessin des petites plantes
+        if (smallPlantCount > 0)
+        {
+            glUniform1f(scaleLoc, 0.25f);
+
+            glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, smallPlantData.size() * sizeof(float), smallPlantData.data());
+            glBindVertexArray(cubeVAO);
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 36, smallPlantCount);
+        }
+
+        // Dessin des voxels transparents
+        if (transparentCount > 0)
+        {
+            glUniform1f(scaleLoc, 1.f);
+            glDepthMask(GL_FALSE);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+            glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, transparentData.size() * sizeof(float), transparentData.data());
+
+            glBindVertexArray(cubeVAO);
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 36, transparentCount);
+
+            // Restauration des états par défaut pour la prochaine frame
+            glDepthMask(GL_TRUE);
+            glEnable(GL_CULL_FACE);
+            glDisable(GL_BLEND);
+        }
+
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
 
     glfwTerminate();
     return 0;

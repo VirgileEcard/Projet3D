@@ -77,7 +77,7 @@ private:
 
                 for (int myTileId : currentCell.possibleTiles)
                 {
-                    // Sécurité : si myTileId est invalide (ne devrait pas arriver), on ignore
+                    // Si myTileId est invalide on ignore
                     if (myTileId >= tileSet.size())
                         continue;
 
@@ -85,7 +85,7 @@ private:
                     allowedNeighborTiles.insert(valid.begin(), valid.end());
                 }
 
-                // Intersection : On ne garde que ce qui était déjà possible ET qui est autorisé par le cas présent
+                // Intersection : On ne garde que ce qui était déjà possible et qui est autorisé par le cas présent
                 std::vector<int> toRemove;
                 for (int nbTileId : neighbor.possibleTiles)
                 {
@@ -102,7 +102,7 @@ private:
 
                     if (neighbor.possibleTiles.empty())
                     {
-                        failed = true; // Contradiction !
+                        failed = true; // Contradiction
                         return;
                     }
                     stack.push_back({nx, ny, nz});
@@ -210,6 +210,8 @@ public:
                     {
                         int ent = c.entropy();
 
+                        // Désactivé pour le moment : meilleure performances sans changement de résultat
+                        // Utile si on change les règles de génération
                         // Si une cellule n'a plus aucune option, c'est un échec
                         /*if (ent == 0)
                         {
@@ -248,7 +250,7 @@ public:
         auto [tx, ty, tz] = candidates[distIdx(rng)];
         Cell &target = grid[getIndex(tx, ty, tz)];
 
-        // Sécurité : Double vérification
+        // Sécurité
         if (target.possibleTiles.empty())
         {
             for (const auto &t : tileSet)

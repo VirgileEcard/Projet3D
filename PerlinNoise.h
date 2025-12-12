@@ -61,7 +61,7 @@ public:
     {
         double total = 0;
         double amplitude = 1;
-        double maxValue = 0; // Utilisé pour normaliser le résultat à 0.0 - 1.0
+        double maxValue = 0; // On le garde pour la normalisation
         for (int i = 0; i < octaves; i++)
         {
             total += noise(x * frequency, y * frequency) * amplitude;
